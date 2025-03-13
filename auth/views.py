@@ -6,8 +6,9 @@ from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from users.models import User
 from users.serializers import UserSerializer, LoginSerializer
-from drf_yasg.utils import swagger_auto_schema  # Add this import
-from drf_yasg import openapi  # Add this import
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+from rest_framework_simplejwt.authentication import JWTAuthentication  # Add this import
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -23,7 +24,7 @@ class RegisterView(generics.CreateAPIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
-
+    authentication_classes = []
     @swagger_auto_schema(
         request_body=LoginSerializer,
         responses={
@@ -31,8 +32,8 @@ class LoginView(APIView):
                 description="Login successful",
                 examples={
                     "application/json": {
-                        "refresh-token": "string",
-                        "access-token": "string"
+                        "refreshToken": "string",
+                        "accessToken": "string"
                     }
                 }
             ),
@@ -52,6 +53,6 @@ class LoginView(APIView):
             return Response({"error": "Wrong password"}, status=status.HTTP_401_UNAUTHORIZED)
         refresh = RefreshToken.for_user(user)
         return Response({
-            'refresh-token': str(refresh),
-            'access-token': str(refresh.access_token),
+            'refreshToken': str(refresh),
+            'accessToken': str(refresh.access_token)
         })
