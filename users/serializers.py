@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Friends
+from .models import User
 from rest_framework_simplejwt.tokens import RefreshToken
 from utils.hash import hash_id
 
@@ -22,12 +22,6 @@ class UserSerializer(serializers.ModelSerializer):
         return user
     def get_id(self, obj):
         return hash_id(obj.id)
-    
-
-class FriendSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Friends
-        fields = '__all__'
 
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()

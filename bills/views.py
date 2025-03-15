@@ -6,7 +6,8 @@ from .serializers import BillParticipantSerializer, BillSerializer
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
-from users.models import Friends, User
+from friends.models import Friends
+from users.models import User
 from rest_framework import status
 from utils.hash import decode_hashed_id, hash_id
 from drf_yasg.utils import swagger_auto_schema

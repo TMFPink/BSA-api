@@ -51,7 +51,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     'users',
     'bills',
-
+    'friends',  # Add this line
 ]
 
 AUTH_USER_MODEL = 'users.User'
