@@ -1,13 +1,17 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
-from .models import Bill, BillParticipant
+from rest_framework.exceptions import ValidationError
+from .models import Bill, BillParticipant, BillDetail
 from .serializers import BillParticipantSerializer, BillSerializer
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
-from users.models import Friends, User
+from friends.models import Friends
+from users.models import User
 from rest_framework import status
 from utils.hash import decode_hashed_id, hash_id
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
 
 class BillListCreateView(generics.ListCreateAPIView):
     serializer_class = BillSerializer
@@ -31,9 +35,41 @@ class BillListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         bill = serializer.save()
-        participant = BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=bill.total_amount)
-        return participant
-        
+        participants_data = self.request.data.get("participants", [])
+        details_data = self.request.data.get("details", [])
+
+        if not isinstance(participants_data, list) or not participants_data:
+            raise ValidationError({"participants": "Participants must be a list of hashed user IDs."})
+
+        valid_friends = [decode_hashed_id(fid, User) for fid in participants_data]
+        valid_friends = [friend for friend in valid_friends if friend]
+
+        if not valid_friends:
+            raise ValidationError({"participants": "Invalid participant IDs."})
+
+        total_participants = len(valid_friends) + 1  # Including the creator
+        split_amount = bill.total_amount / total_participants
+
+        BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=split_amount)
+
+        for friend_id in valid_friends:
+            friend = get_object_or_404(User, id=friend_id)
+            if not Friends.objects.filter(user=self.request.user, friend=friend).exists():
+                raise ValidationError({"participants": f"{friend.username} is not your friend!"})
+            BillParticipant.objects.create(bill=bill, user=friend, amount_owed=split_amount)
+
+        for detail in details_data:
+            if not BillDetail.objects.filter(bill=bill, **detail).exists():
+                BillDetail.objects.create(bill=bill, **detail)
+
+        return bill
+
+    @swagger_auto_schema(
+        request_body=BillSerializer,
+        responses={201: BillSerializer}
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
 
 class BillDetailView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
@@ -56,6 +92,66 @@ class BillDetailView(generics.RetrieveAPIView):
             id__in=BillParticipant.objects.filter(user=self.request.user).values_list("bill_id", flat=True)
         )
 
+    @swagger_auto_schema(
+        manual_parameters=[
+            openapi.Parameter('hashed_id', openapi.IN_PATH, description="Hashed bill ID", type=openapi.TYPE_STRING)
+        ],
+        responses={200: BillSerializer}
+    )
+    def get(self, request, *args, **kwargs):
+        bill = self.get_object()
+        serializer = self.get_serializer(bill)
+        return Response(serializer.data)
+
+class BillUpdateView(generics.UpdateAPIView):
+    serializer_class = BillSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        # Get the hashed bill ID from the URL
+        hashed_id = self.kwargs.get("hashed_id")
+
+        # Decode it to get the original bill ID
+        bill_id = decode_hashed_id(hashed_id, Bill)
+
+        if not bill_id:
+            return get_object_or_404(Bill, id=-1)  # Return 404 if invalid ID
+
+        # Ensure the user has access to the bill
+        return get_object_or_404(
+            Bill, 
+            id=bill_id, 
+            id__in=BillParticipant.objects.filter(user=self.request.user).values_list("bill_id", flat=True)
+        )
+
+    def perform_update(self, serializer):
+        bill = serializer.save()
+        participants_data = self.request.data.get("participants", [])
+
+        if participants_data:
+            if not isinstance(participants_data, list):
+                raise ValidationError({"participants": "Participants must be a list of hashed user IDs."})
+
+            valid_friends = [decode_hashed_id(fid, User) for fid in participants_data]
+            valid_friends = [friend for friend in valid_friends if friend]
+
+            if not valid_friends:
+                raise ValidationError({"participants": "Invalid participant IDs."})
+
+            total_participants = len(valid_friends) + 1  # Including the creator
+            split_amount = bill.total_amount / total_participants
+
+            BillParticipant.objects.filter(bill=bill).delete()
+            BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=split_amount)
+
+            for friend_id in valid_friends:
+                friend = get_object_or_404(User, id=friend_id)
+                if not Friends.objects.filter(user=self.request.user, friend=friend).exists():
+                    raise ValidationError({"participants": f"{friend.username} is not your friend!"})
+                BillParticipant.objects.create(bill=bill, user=friend, amount_owed=split_amount)
+
+        return bill
+
 class PayBillView(generics.UpdateAPIView):
     serializer_class = BillParticipantSerializer
     permission_classes = [IsAuthenticated]
@@ -63,10 +159,30 @@ class PayBillView(generics.UpdateAPIView):
     def perform_update(self, serializer):
         serializer.save(is_paid=True)
 
+    @swagger_auto_schema(
+        manual_parameters=[
+            openapi.Parameter('pk', openapi.IN_PATH, description="Primary key of the bill participant", type=openapi.TYPE_INTEGER)
+        ],
+        request_body=BillParticipantSerializer,
+        responses={200: BillParticipantSerializer}
+    )
+    def put(self, request, *args, **kwargs):
+        return super().put(request, *args, **kwargs)
 
 class AddParticipantsToBillView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'bill_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed bill ID'),
+                'participants': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_STRING), description='List of hashed participant IDs')
+            },
+            required=['bill_id', 'participants']
+        ),
+        responses={201: "Participants added successfully!"}
+    )
     def post(self, request):
 
         encoded_bill_id = request.data.get("bill_id")
