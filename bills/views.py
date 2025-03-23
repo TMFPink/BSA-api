@@ -21,11 +21,11 @@ class BillListCreateView(generics.ListCreateAPIView):
         
         queryset =  Bill.objects.filter(id__in=BillParticipant.objects.filter(user=self.request.user).values_list('bill_id', flat=True))    
 
-        title = self.request.query_params.get("title", None)
+        billName = self.request.query_params.get("billName", None)
         all_paid = self.request.query_params.get("all_paid",None)
         
         if title:
-            queryset = queryset.filter(title__icontains=title)
+            queryset = queryset.filter(title__icontains=billName)
         if all_paid:
             queryset = queryset.filter(all_paid=all_paid)
         
@@ -34,38 +34,75 @@ class BillListCreateView(generics.ListCreateAPIView):
         
 
     def perform_create(self, serializer):
-        bill = serializer.save()
         participants_data = self.request.data.get("participants", [])
-        details_data = self.request.data.get("details", [])
+        payer_data = self.request.data.get("payer", None)
 
-        if not isinstance(participants_data, list) or not participants_data:
-            raise ValidationError({"participants": "Participants must be a list of hashed user IDs."})
+        if not participants_data or not isinstance(participants_data, list):
+            raise ValidationError({"participants": "Participants must be a non-empty list of objects."})
 
-        valid_friends = [decode_hashed_id(fid, User) for fid in participants_data]
-        valid_friends = [friend for friend in valid_friends if friend]
+        # Validate participants
+        valid_participants = []
+        for participant in participants_data:
+            user_id = decode_hashed_id(participant['id'], User)
+            user = get_object_or_404(User, id=user_id)
+            valid_participants.append(user)
 
-        if not valid_friends:
-            raise ValidationError({"participants": "Invalid participant IDs."})
+        # Validate payer
+        payer_id = decode_hashed_id(payer_data['id'], User)
+        payer = get_object_or_404(User, id=payer_id)
 
-        total_participants = len(valid_friends) + 1  # Including the creator
-        split_amount = bill.total_amount / total_participants
+        # Ensure payer is part of participants
+        if payer not in valid_participants:
+            raise ValidationError({"payer": "Payer must be one of the participants."})
 
-        BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=split_amount)
-
-        for friend_id in valid_friends:
-            friend = get_object_or_404(User, id=friend_id)
-            if not Friends.objects.filter(user=self.request.user, friend=friend).exists():
-                raise ValidationError({"participants": f"{friend.username} is not your friend!"})
-            BillParticipant.objects.create(bill=bill, user=friend, amount_owed=split_amount)
-
-        for detail in details_data:
-            if not BillDetail.objects.filter(bill=bill, **detail).exists():
-                BillDetail.objects.create(bill=bill, **detail)
-
-        return bill
+        # Save the bill
+        serializer.save()
 
     @swagger_auto_schema(
-        request_body=BillSerializer,
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'title': openapi.Schema(type=openapi.TYPE_STRING, description='Title of the bill'),
+                'category': openapi.Schema(type=openapi.TYPE_STRING, description='Category of the bill'),
+                'date': openapi.Schema(type=openapi.FORMAT_DATETIME, description='Creation date of the bill'),
+                'shared': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the bill is shared'),
+                'billDetails': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            'description': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the item'),
+                            'amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Price of the item'),
+                        }
+                    ),
+                    description='List of bill details'
+                ),
+                'participants': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            'id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed participant ID'),
+                            'name': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the participant'),
+                            'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Split amount for the participant'),
+                            'paid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the participant has paid'),
+                        }
+                    ),
+                    description='List of participants'
+                ),
+                'payer': openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed payer ID'),
+                        'name': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the payer'),
+                        'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Split amount for the payer'),
+                        'paid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the payer has paid'),
+                    },
+                    description='Payer details'
+                ),
+            },
+            required=['billName', 'category', 'date', 'shared', 'billDetails', 'participants', 'payer']
+        ),
         responses={201: BillSerializer}
     )
     def post(self, request, *args, **kwargs):
@@ -142,13 +179,13 @@ class BillUpdateView(generics.UpdateAPIView):
             split_amount = bill.total_amount / total_participants
 
             BillParticipant.objects.filter(bill=bill).delete()
-            BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=split_amount)
+            BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, split_amount=split_amount)
 
             for friend_id in valid_friends:
                 friend = get_object_or_404(User, id=friend_id)
                 if not Friends.objects.filter(user=self.request.user, friend=friend).exists():
                     raise ValidationError({"participants": f"{friend.username} is not your friend!"})
-                BillParticipant.objects.create(bill=bill, user=friend, amount_owed=split_amount)
+                BillParticipant.objects.create(bill=bill, user=friend, split_amount=split_amount)
 
         return bill
 
@@ -177,7 +214,11 @@ class AddParticipantsToBillView(APIView):
             type=openapi.TYPE_OBJECT,
             properties={
                 'bill_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed bill ID'),
-                'participants': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_STRING), description='List of hashed participant IDs')
+                'participants': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_STRING),
+                    description='List of hashed participant IDs'
+                ),
             },
             required=['bill_id', 'participants']
         ),
@@ -218,7 +259,7 @@ class AddParticipantsToBillView(APIView):
 
         # Update existing participants' owed amount
         for participant in bill.participants.all():
-            participant.amount_owed = split_amount
+            participant.split_amount = split_amount
             participant.save()
 
         # Add new participants
@@ -226,10 +267,10 @@ class AddParticipantsToBillView(APIView):
         for friend in valid_friends:
             friend = get_object_or_404(User, id=friend)
             participant, created = BillParticipant.objects.get_or_create(
-                bill=bill, user=friend, defaults={"amount_owed": split_amount}
+                bill=bill, user=friend, defaults={"split_amount": split_amount}
             )
             if not created:
-                participant.amount_owed = split_amount
+                participant.split_amount = split_amount
                 participant.save()
             new_participants.append(participant)
 
@@ -241,7 +282,7 @@ class AddParticipantsToBillView(APIView):
                     "id": hash_id(participant.user.id),
                     "username": participant.user.username
                 },
-                "amount_owed": participant.amount_owed,
+                "split_amount": participant.split_amount,  # Include split_amount
                 "is_paid": participant.is_paid,
             }
             for participant in new_participants
