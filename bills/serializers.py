@@ -17,7 +17,7 @@ class BillParticipantSerializer(serializers.ModelSerializer):
 class BillDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = BillDetail
-        fields = ['item_name', 'item_price']
+        fields = ['description', 'amount']
 
 class ParticipantSerializer(serializers.Serializer):
     id = serializers.CharField()
@@ -37,7 +37,7 @@ class BillSerializer(serializers.ModelSerializer):
     category = serializers.CharField(required=True)
     date = serializers.DateTimeField(source='created_at', required=True)
     participants = ParticipantSerializer(many=True, write_only=True, required=True)
-    payer = PayerSerializer(write_only=True, required=True)
+    payer = serializers.CharField(write_only=True, required=False, allow_blank=True)  # Allow blank strings for payer
     shared = serializers.BooleanField(required=True)
     total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
 
@@ -47,10 +47,25 @@ class BillSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
     def create(self, validated_data):
+        
+        
+        payer_id = self.initial_data.get('payer')
+        
+        if payer_id == "":
+            payer_id = None
+        if payer_id:
+            print(f"Calling decode_hashed_id with payer_id: {payer_id}")
+            decoded_id = decode_hashed_id(payer_id, User)  # Decode hashed ID
+            print(f"Decoded payer_id: {decoded_id}")  # Log the decoded ID
+            if not decoded_id:
+                raise serializers.ValidationError({"payer": "Invalid hashed payer ID."})
+            validated_data['payer'] = get_object_or_404(User, id=decoded_id)
+        else:
+            validated_data['payer'] = None
+
         # Extract nested data
         details_data = validated_data.pop('billDetails', [])
         participants_data = validated_data.pop('participants', [])
-        payer_data = validated_data.pop('payer', None)
 
         # Create the bill
         bill = Bill.objects.create(**validated_data)
@@ -70,24 +85,28 @@ class BillSerializer(serializers.ModelSerializer):
                 is_paid=participant_data['paid']
             )
 
-        # Add payer
-        payer_id = decode_hashed_id(payer_data['id'], User)
-        payer = get_object_or_404(User, id=payer_id)
-        bill.payer = payer
-        bill.save()
-
         return bill
 
+    def update(self, instance, validated_data):
+        # Handle empty string for payer during update
+        if 'payer' in validated_data:
+            payer_id = validated_data.pop('payer')
+            if payer_id == "":
+                payer_id = None
+            if payer_id:
+                validated_data['payer'] = get_object_or_404(User, id=payer_id)
+            else:
+                validated_data['payer'] = None
+
+        return super().update(instance, validated_data)
+
     def to_representation(self, instance):
-        representation = {
-            "billName": instance.billName,
-            "category": instance.category,
-            "date": instance.created_at.isoformat(),
-            "shared": instance.shared,
+        representation = super().to_representation(instance)  # Use the parent method to avoid manual duplication
+        representation.update({
             "billDetails": [
                 {
-                    "description": detail.item_name,
-                    "amount": detail.item_price
+                    "description": detail.description,
+                    "amount": detail.amount
                 }
                 for detail in instance.details.all()
             ],
@@ -100,11 +119,11 @@ class BillSerializer(serializers.ModelSerializer):
                 }
                 for participant in instance.bill_participants.all()
             ],
-            "payer": {
+            "payer": None if instance.payer is None else {
                 "id": hash_id(instance.payer.id),
                 "name": instance.payer.username,
                 "split_amount": instance.total_amount,
                 "paid": instance.all_paid
             }
-        }
+        })
         return representation

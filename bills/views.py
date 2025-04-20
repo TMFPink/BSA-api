@@ -24,7 +24,7 @@ class BillListCreateView(generics.ListCreateAPIView):
         billName = self.request.query_params.get("billName", None)
         all_paid = self.request.query_params.get("all_paid",None)
         
-        if title:
+        if billName:
             queryset = queryset.filter(title__icontains=billName)
         if all_paid:
             queryset = queryset.filter(all_paid=all_paid)
@@ -34,11 +34,8 @@ class BillListCreateView(generics.ListCreateAPIView):
         
 
     def perform_create(self, serializer):
-        participants_data = self.request.data.get("participants", [])
-        payer_data = self.request.data.get("payer", None)
-
-        if not participants_data or not isinstance(participants_data, list):
-            raise ValidationError({"participants": "Participants must be a non-empty list of objects."})
+        participants_data = self.request.data.get('participants', [])
+        payer_data = self.request.data.get('payer', None)
 
         # Validate participants
         valid_participants = []
@@ -48,21 +45,25 @@ class BillListCreateView(generics.ListCreateAPIView):
             valid_participants.append(user)
 
         # Validate payer
-        payer_id = decode_hashed_id(payer_data['id'], User)
-        payer = get_object_or_404(User, id=payer_id)
+        if payer_data == "":  # Handle empty string for payer
+            payer_data = None
+        if payer_data:
+            payer_id = decode_hashed_id(payer_data, User)
+            payer = get_object_or_404(User, id=payer_id)
+            # Ensure payer is part of participants
+            if payer not in valid_participants:
+                raise ValidationError({"payer": "Payer must be one of the participants."})
+        else:
+            payer = None
 
-        # Ensure payer is part of participants
-        if payer not in valid_participants:
-            raise ValidationError({"payer": "Payer must be one of the participants."})
-
-        # Save the bill
-        serializer.save()
+        # Save the serializer with validated data
+        serializer.save(payer=payer)
 
     @swagger_auto_schema(
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={
-                'title': openapi.Schema(type=openapi.TYPE_STRING, description='Title of the bill'),
+                'billName': openapi.Schema(type=openapi.TYPE_STRING, description='billName of the bill'),
                 'category': openapi.Schema(type=openapi.TYPE_STRING, description='Category of the bill'),
                 'date': openapi.Schema(type=openapi.FORMAT_DATETIME, description='Creation date of the bill'),
                 'shared': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the bill is shared'),
