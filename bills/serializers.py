@@ -140,3 +140,18 @@ class BillSerializer(serializers.ModelSerializer):
             }
         })
         return representation
+
+class BillImageUploadSerializer(serializers.Serializer):
+    image = serializers.ImageField(required=True)
+
+class BillItemFromImageSerializer(serializers.Serializer):
+    description = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    
+class BillFromImageResponseSerializer(serializers.Serializer):
+    billName = serializers.CharField(required=False)
+    category = serializers.CharField(required=False)
+    total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    date = serializers.CharField(required=False)
+    items = BillItemFromImageSerializer(many=True, required=False)
+    error = serializers.CharField(required=False)

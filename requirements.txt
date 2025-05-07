@@ -7,3 +7,5 @@ drf-yasg>=1.21.7
 drf-spectacular 
 drf-spectacular-sidecar
 psycopg2-binary 
+openai>=1.0.0
+Pillow>=10.0.0 

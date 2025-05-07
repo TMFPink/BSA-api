@@ -12,6 +12,9 @@ from rest_framework import status
 from utils.hash import decode_hashed_id, hash_id
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from rest_framework.parsers import MultiPartParser, FormParser
+from utils.extract_image import extract_bill_data
+from .serializers import BillImageUploadSerializer, BillFromImageResponseSerializer
 
 class BillViewSet(viewsets.ModelViewSet):
     queryset = Bill.objects.all()
@@ -328,3 +331,36 @@ class AddParticipantsToBillView(APIView):
         ]
 
         return Response(hashed_participants, status=status.HTTP_201_CREATED)
+    
+
+
+
+# Add this new view class to your views.py file
+class ProcessBillImageView(APIView): 
+    # permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ['post']  
+    
+    @swagger_auto_schema(
+        request_body=BillImageUploadSerializer,
+        responses={
+            200: BillFromImageResponseSerializer,
+            400: "Bad Request",
+            401: "Unauthorized"
+        },
+        operation_description="Upload a bill image to extract information without saving the image"
+    )
+    
+    def post(self, request):
+        serializer = BillImageUploadSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            image_file = serializer.validated_data['image']
+            
+            # Extract bill data using OpenAI
+            result = extract_bill_data(image_file)
+            
+            # Return the extracted data
+            return Response(result, status=status.HTTP_200_OK)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

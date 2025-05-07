@@ -15,6 +15,7 @@ import os
 import sys
 from datetime import timedelta
 from dotenv import load_dotenv
+import openai
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -54,7 +55,19 @@ INSTALLED_APPS = [
     'drf_yasg',
     'users',
     'bills',
-    'friends',  # Add this line
+    'friends',  
+]
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+
+CORS_ALLOW_ALL_ORIGINS = True  # For development only
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
 ]
 
 AUTH_USER_MODEL = 'users.User'
