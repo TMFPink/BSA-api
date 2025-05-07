@@ -1,4 +1,4 @@
-from rest_framework import generics
+from rest_framework import generics, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 from .models import Bill, BillParticipant, BillDetail
@@ -13,59 +13,127 @@ from utils.hash import decode_hashed_id, hash_id
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
+class BillViewSet(viewsets.ModelViewSet):
+    queryset = Bill.objects.all()
+    serializer_class = BillSerializer
+
 class BillListCreateView(generics.ListCreateAPIView):
     serializer_class = BillSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        
-        queryset =  Bill.objects.filter(id__in=BillParticipant.objects.filter(user=self.request.user).values_list('bill_id', flat=True))    
+        queryset = Bill.objects.filter(
+            id__in=BillParticipant.objects.filter(user=self.request.user).values_list('bill_id', flat=True)
+        ).order_by('-created_at')  # Order by created_at in descending order (new to old)
 
-        title = self.request.query_params.get("title", None)
-        all_paid = self.request.query_params.get("all_paid",None)
+        # Get filter parameters from request
+        billName = self.request.query_params.get("billName", None)
+        category = self.request.query_params.get("category", None)
+        all_paid = self.request.query_params.get("all_paid", None)  # Payment Status
+        date = self.request.query_params.get("date", None)  # Bill Date
         
-        if title:
-            queryset = queryset.filter(title__icontains=title)
-        if all_paid:
-            queryset = queryset.filter(all_paid=all_paid)
+        # Apply filters if they are provided
+        if billName:
+            queryset = queryset.filter(billName__icontains=billName)
         
-
+        if category:
+            queryset = queryset.filter(category__icontains=category)
+        
+        if all_paid is not None:
+            # Convert string to boolean
+            is_paid = all_paid.lower() == 'true'
+            queryset = queryset.filter(all_paid=is_paid)
+        
+        if date:            
+            queryset = queryset.filter(created_at__date=date)
+            
         return queryset
-        
-
-    def perform_create(self, serializer):
-        bill = serializer.save()
-        participants_data = self.request.data.get("participants", [])
-        details_data = self.request.data.get("details", [])
-
-        if not isinstance(participants_data, list) or not participants_data:
-            raise ValidationError({"participants": "Participants must be a list of hashed user IDs."})
-
-        valid_friends = [decode_hashed_id(fid, User) for fid in participants_data]
-        valid_friends = [friend for friend in valid_friends if friend]
-
-        if not valid_friends:
-            raise ValidationError({"participants": "Invalid participant IDs."})
-
-        total_participants = len(valid_friends) + 1  # Including the creator
-        split_amount = bill.total_amount / total_participants
-
-        BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=split_amount)
-
-        for friend_id in valid_friends:
-            friend = get_object_or_404(User, id=friend_id)
-            if not Friends.objects.filter(user=self.request.user, friend=friend).exists():
-                raise ValidationError({"participants": f"{friend.username} is not your friend!"})
-            BillParticipant.objects.create(bill=bill, user=friend, amount_owed=split_amount)
-
-        for detail in details_data:
-            if not BillDetail.objects.filter(bill=bill, **detail).exists():
-                BillDetail.objects.create(bill=bill, **detail)
-
-        return bill
 
     @swagger_auto_schema(
-        request_body=BillSerializer,
+        manual_parameters=[
+            openapi.Parameter('billName', openapi.IN_QUERY, description="Filter by bill name", type=openapi.TYPE_STRING),
+            openapi.Parameter('category', openapi.IN_QUERY, description="Filter by category", type=openapi.TYPE_STRING),
+            openapi.Parameter('all_paid', openapi.IN_QUERY, description="Filter by payment status (true/false)", type=openapi.TYPE_BOOLEAN),
+            openapi.Parameter('date', openapi.IN_QUERY, description="Filter by bill date (YYYY-MM-DD)", type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+        ],
+        responses={200: BillSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        participants_data = self.request.data.get('participants', [])
+        payer_data = self.request.data.get('payer', None)
+
+        # Validate participants
+        valid_participants = []
+        for participant in participants_data:
+            user_id = decode_hashed_id(participant['id'], User)
+            user = get_object_or_404(User, id=user_id)
+            valid_participants.append(user)
+
+        # Validate payer
+        if payer_data == "":  # Handle empty string for payer
+            payer_data = None
+        if payer_data:
+            payer_id = decode_hashed_id(payer_data, User)
+            payer = get_object_or_404(User, id=payer_id)
+            # Ensure payer is part of participants
+            if payer not in valid_participants:
+                raise ValidationError({"payer": "Payer must be one of the participants."})
+        else:
+            payer = None
+
+        # Save the serializer with validated data
+        serializer.save(payer=payer)
+
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'billName': openapi.Schema(type=openapi.TYPE_STRING, description='billName of the bill'),
+                'category': openapi.Schema(type=openapi.TYPE_STRING, description='Category of the bill'),
+                'date': openapi.Schema(type=openapi.FORMAT_DATETIME, description='Creation date of the bill'),
+                'shared': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the bill is shared'),
+                'billDetails': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            'description': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the item'),
+                            'amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Price of the item'),
+                            'user': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed user ID', nullable=True),  # Made optional
+                        }
+                    ),
+                    description='List of bill details'
+                ),
+                'participants': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            'id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed participant ID'),
+                            'name': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the participant'),
+                            'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Split amount for the participant'),
+                            'paid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the participant has paid'),
+                        }
+                    ),
+                    description='List of participants'
+                ),
+                'payer': openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed payer ID'),
+                        'name': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the payer'),
+                        'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Split amount for the payer'),
+                        'paid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the payer has paid'),
+                    },
+                    description='Payer details'
+                ),
+                'allPaid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether all participants have paid'),
+            },
+            required=['billName', 'category', 'date', 'shared', 'billDetails', 'participants']  # Remove 'user' from required fields
+        ),
         responses={201: BillSerializer}
     )
     def post(self, request, *args, **kwargs):
@@ -101,7 +169,15 @@ class BillDetailView(generics.RetrieveAPIView):
     def get(self, request, *args, **kwargs):
         bill = self.get_object()
         serializer = self.get_serializer(bill)
-        return Response(serializer.data)
+        data = serializer.data
+
+        # Modify the payer field to include only the username
+        if bill.payer:
+            data['payer'] = bill.payer.username
+        else:
+            data['payer'] = None
+
+        return Response(data)
 
 class BillUpdateView(generics.UpdateAPIView):
     serializer_class = BillSerializer
@@ -142,13 +218,13 @@ class BillUpdateView(generics.UpdateAPIView):
             split_amount = bill.total_amount / total_participants
 
             BillParticipant.objects.filter(bill=bill).delete()
-            BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, amount_owed=split_amount)
+            BillParticipant.objects.create(bill=bill, user=self.request.user, is_paid=True, split_amount=split_amount)
 
             for friend_id in valid_friends:
                 friend = get_object_or_404(User, id=friend_id)
                 if not Friends.objects.filter(user=self.request.user, friend=friend).exists():
                     raise ValidationError({"participants": f"{friend.username} is not your friend!"})
-                BillParticipant.objects.create(bill=bill, user=friend, amount_owed=split_amount)
+                BillParticipant.objects.create(bill=bill, user=friend, split_amount=split_amount)
 
         return bill
 
@@ -177,7 +253,11 @@ class AddParticipantsToBillView(APIView):
             type=openapi.TYPE_OBJECT,
             properties={
                 'bill_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed bill ID'),
-                'participants': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_STRING), description='List of hashed participant IDs')
+                'participants': openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_STRING),
+                    description='List of hashed participant IDs'
+                ),
             },
             required=['bill_id', 'participants']
         ),
@@ -218,7 +298,7 @@ class AddParticipantsToBillView(APIView):
 
         # Update existing participants' owed amount
         for participant in bill.participants.all():
-            participant.amount_owed = split_amount
+            participant.split_amount = split_amount
             participant.save()
 
         # Add new participants
@@ -226,10 +306,10 @@ class AddParticipantsToBillView(APIView):
         for friend in valid_friends:
             friend = get_object_or_404(User, id=friend)
             participant, created = BillParticipant.objects.get_or_create(
-                bill=bill, user=friend, defaults={"amount_owed": split_amount}
+                bill=bill, user=friend, defaults={"split_amount": split_amount}
             )
             if not created:
-                participant.amount_owed = split_amount
+                participant.split_amount = split_amount
                 participant.save()
             new_participants.append(participant)
 
@@ -241,7 +321,7 @@ class AddParticipantsToBillView(APIView):
                     "id": hash_id(participant.user.id),
                     "username": participant.user.username
                 },
-                "amount_owed": participant.amount_owed,
+                "split_amount": participant.split_amount,  # Include split_amount
                 "is_paid": participant.is_paid,
             }
             for participant in new_participants

@@ -13,8 +13,11 @@ def hash_id(instance_id):
     return hash_object.hexdigest()[:10]  
 
 def decode_hashed_id(hashed_id, model_class):
+    print(f"Decoding hashed_id: {hashed_id} for model: {model_class.__name__}")
     
     for instance in model_class.objects.all():
         if hash_id(instance.id) == hashed_id:
+            print(f"Decoded ID: {instance.id}")
             return instance.id  # Return the ID, not the object
+    print("No matching ID found.")
     return None
