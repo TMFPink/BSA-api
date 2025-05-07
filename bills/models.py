@@ -24,6 +24,10 @@ class Bill(models.Model):
             self.payer = User.objects.get(pk=self.payer)
         super().save(*args, **kwargs)
 
+    @property
+    def allPaid(self):
+        return all(participant.is_paid for participant in self.bill_participants.all())
+
     def __str__(self):
         return self.billName
 
@@ -31,6 +35,7 @@ class BillDetail(models.Model):
     bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name='details')
     description = models.CharField(max_length=255)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bill_details', blank=True, null=True)
 
     def __str__(self):
         return f"{self.description} for {self.bill.billName}"

@@ -15,9 +15,11 @@ class BillParticipantSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'bill', 'split_amount', 'is_paid']
 
 class BillDetailSerializer(serializers.ModelSerializer):
+    user = serializers.CharField(required=False, allow_null=True)  # Accept hashed user ID as a string
+
     class Meta:
         model = BillDetail
-        fields = ['description', 'amount']
+        fields = ['id', 'description', 'amount', 'user']
 
 class ParticipantSerializer(serializers.Serializer):
     id = serializers.CharField()
@@ -40,15 +42,14 @@ class BillSerializer(serializers.ModelSerializer):
     payer = serializers.CharField(write_only=True, required=False, allow_blank=True)  # Allow blank strings for payer
     shared = serializers.BooleanField(required=True)
     total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
+    allPaid = serializers.BooleanField( read_only=True)
 
     class Meta:
         model = Bill
-        fields = ['id', 'billDetails', 'billName', 'category', 'date', 'participants', 'payer', 'shared', 'total_amount']
+        fields = ['id', 'billDetails', 'billName', 'category', 'date', 'participants', 'payer', 'shared', 'total_amount', 'allPaid']
         read_only_fields = ['id']
 
     def create(self, validated_data):
-        
-        
         payer_id = self.initial_data.get('payer')
         
         if payer_id == "":
@@ -72,11 +73,20 @@ class BillSerializer(serializers.ModelSerializer):
 
         # Add bill details
         for detail_data in details_data:
+            if 'user' in detail_data and detail_data['user']:
+                user_id = decode_hashed_id(detail_data['user'], User)  # Decode hashed ID for user
+                if not user_id:
+                    raise serializers.ValidationError({"billDetails": [{"user": "Invalid hashed user ID."}]})
+                detail_data['user'] = get_object_or_404(User, id=user_id)
+            else:
+                detail_data['user'] = None  # Handle cases where user is null
             BillDetail.objects.create(bill=bill, **detail_data)
 
         # Add participants
         for participant_data in participants_data:
             user_id = decode_hashed_id(participant_data['id'], User)
+            if not user_id:
+                raise serializers.ValidationError({"participants": [{"id": "Invalid hashed participant ID."}]})
             user = get_object_or_404(User, id=user_id)
             BillParticipant.objects.create(
                 bill=bill,
@@ -103,11 +113,14 @@ class BillSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         representation = super().to_representation(instance)  # Use the parent method to avoid manual duplication
         representation.update({
+            "id": hash_id(instance.id),  # Hash the id field
             "billDetails": [
                 {
                     "description": detail.description,
-                    "amount": detail.amount
-                }
+                    "amount": detail.amount,
+                    "user": hash_id(detail.user.id) if detail.user else None,
+                        
+                    }
                 for detail in instance.details.all()
             ],
             "participants": [

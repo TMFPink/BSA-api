@@ -1,4 +1,4 @@
-from rest_framework import generics
+from rest_framework import generics, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 from .models import Bill, BillParticipant, BillDetail
@@ -13,25 +13,53 @@ from utils.hash import decode_hashed_id, hash_id
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
+class BillViewSet(viewsets.ModelViewSet):
+    queryset = Bill.objects.all()
+    serializer_class = BillSerializer
+
 class BillListCreateView(generics.ListCreateAPIView):
     serializer_class = BillSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        
-        queryset =  Bill.objects.filter(id__in=BillParticipant.objects.filter(user=self.request.user).values_list('bill_id', flat=True))    
+        queryset = Bill.objects.filter(
+            id__in=BillParticipant.objects.filter(user=self.request.user).values_list('bill_id', flat=True)
+        ).order_by('-created_at')  # Order by created_at in descending order (new to old)
 
+        # Get filter parameters from request
         billName = self.request.query_params.get("billName", None)
-        all_paid = self.request.query_params.get("all_paid",None)
+        category = self.request.query_params.get("category", None)
+        all_paid = self.request.query_params.get("all_paid", None)  # Payment Status
+        date = self.request.query_params.get("date", None)  # Bill Date
         
+        # Apply filters if they are provided
         if billName:
-            queryset = queryset.filter(title__icontains=billName)
-        if all_paid:
-            queryset = queryset.filter(all_paid=all_paid)
+            queryset = queryset.filter(billName__icontains=billName)
         
-
+        if category:
+            queryset = queryset.filter(category__icontains=category)
+        
+        if all_paid is not None:
+            # Convert string to boolean
+            is_paid = all_paid.lower() == 'true'
+            queryset = queryset.filter(all_paid=is_paid)
+        
+        if date:            
+            queryset = queryset.filter(created_at__date=date)
+            
         return queryset
-        
+
+    @swagger_auto_schema(
+        manual_parameters=[
+            openapi.Parameter('billName', openapi.IN_QUERY, description="Filter by bill name", type=openapi.TYPE_STRING),
+            openapi.Parameter('category', openapi.IN_QUERY, description="Filter by category", type=openapi.TYPE_STRING),
+            openapi.Parameter('all_paid', openapi.IN_QUERY, description="Filter by payment status (true/false)", type=openapi.TYPE_BOOLEAN),
+            openapi.Parameter('date', openapi.IN_QUERY, description="Filter by bill date (YYYY-MM-DD)", type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+        ],
+        responses={200: BillSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         participants_data = self.request.data.get('participants', [])
@@ -74,6 +102,7 @@ class BillListCreateView(generics.ListCreateAPIView):
                         properties={
                             'description': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the item'),
                             'amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Price of the item'),
+                            'user': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed user ID', nullable=True),  # Made optional
                         }
                     ),
                     description='List of bill details'
@@ -101,8 +130,9 @@ class BillListCreateView(generics.ListCreateAPIView):
                     },
                     description='Payer details'
                 ),
+                'allPaid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether all participants have paid'),
             },
-            required=['billName', 'category', 'date', 'shared', 'billDetails', 'participants', 'payer']
+            required=['billName', 'category', 'date', 'shared', 'billDetails', 'participants']  # Remove 'user' from required fields
         ),
         responses={201: BillSerializer}
     )
@@ -139,7 +169,15 @@ class BillDetailView(generics.RetrieveAPIView):
     def get(self, request, *args, **kwargs):
         bill = self.get_object()
         serializer = self.get_serializer(bill)
-        return Response(serializer.data)
+        data = serializer.data
+
+        # Modify the payer field to include only the username
+        if bill.payer:
+            data['payer'] = bill.payer.username
+        else:
+            data['payer'] = None
+
+        return Response(data)
 
 class BillUpdateView(generics.UpdateAPIView):
     serializer_class = BillSerializer
