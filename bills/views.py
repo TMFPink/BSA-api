@@ -231,22 +231,22 @@ class BillUpdateView(generics.UpdateAPIView):
 
         return bill
 
-class PayBillView(generics.UpdateAPIView):
-    serializer_class = BillParticipantSerializer
-    permission_classes = [IsAuthenticated]
+# class PayBillView(generics.UpdateAPIView):
+#     serializer_class = BillParticipantSerializer
+#     permission_classes = [IsAuthenticated]
 
-    def perform_update(self, serializer):
-        serializer.save(is_paid=True)
+#     def perform_update(self, serializer):
+#         serializer.save(is_paid=True)
 
-    @swagger_auto_schema(
-        manual_parameters=[
-            openapi.Parameter('pk', openapi.IN_PATH, description="Primary key of the bill participant", type=openapi.TYPE_INTEGER)
-        ],
-        request_body=BillParticipantSerializer,
-        responses={200: BillParticipantSerializer}
-    )
-    def put(self, request, *args, **kwargs):
-        return super().put(request, *args, **kwargs)
+#     @swagger_auto_schema(
+#         manual_parameters=[
+#             openapi.Parameter('pk', openapi.IN_PATH, description="Primary key of the bill participant", type=openapi.TYPE_INTEGER)
+#         ],
+#         request_body=BillParticipantSerializer,
+#         responses={200: BillParticipantSerializer}
+#     )
+#     def put(self, request, *args, **kwargs):
+#         return super().put(request, *args, **kwargs)
 
 class AddParticipantsToBillView(APIView):
     permission_classes = [IsAuthenticated]
@@ -322,9 +322,11 @@ class AddParticipantsToBillView(APIView):
                 "id": hash_id(participant.id),
                 "user": {
                     "id": hash_id(participant.user.id),
-                    "username": participant.user.username
+                    "username": participant.user.username,
+                    "avatarUrl": participant.user.avatarUrl  
+
                 },
-                "split_amount": participant.split_amount,  # Include split_amount
+                "split_amount": participant.split_amount,  
                 "is_paid": participant.is_paid,
             }
             for participant in new_participants
