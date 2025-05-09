@@ -15,6 +15,8 @@ from drf_yasg import openapi
 from rest_framework.parsers import MultiPartParser, FormParser
 from utils.extract_image import extract_bill_data
 from .serializers import BillImageUploadSerializer, BillFromImageResponseSerializer
+from datetime import datetime, timedelta
+from django.db.models import Sum
 
 class BillViewSet(viewsets.ModelViewSet):
     queryset = Bill.objects.all()
@@ -231,23 +233,6 @@ class BillUpdateView(generics.UpdateAPIView):
 
         return bill
 
-# class PayBillView(generics.UpdateAPIView):
-#     serializer_class = BillParticipantSerializer
-#     permission_classes = [IsAuthenticated]
-
-#     def perform_update(self, serializer):
-#         serializer.save(is_paid=True)
-
-#     @swagger_auto_schema(
-#         manual_parameters=[
-#             openapi.Parameter('pk', openapi.IN_PATH, description="Primary key of the bill participant", type=openapi.TYPE_INTEGER)
-#         ],
-#         request_body=BillParticipantSerializer,
-#         responses={200: BillParticipantSerializer}
-#     )
-#     def put(self, request, *args, **kwargs):
-#         return super().put(request, *args, **kwargs)
-
 class AddParticipantsToBillView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -335,9 +320,6 @@ class AddParticipantsToBillView(APIView):
         return Response(hashed_participants, status=status.HTTP_201_CREATED)
     
 
-
-
-# Add this new view class to your views.py file
 class ProcessBillImageView(APIView): 
     # permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -366,3 +348,229 @@ class ProcessBillImageView(APIView):
             return Response(result, status=status.HTTP_200_OK)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class UserBalanceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        responses={
+            200: openapi.Response(
+                description="User balance details",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'owed_to_me_by_user': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'user': openapi.Schema(type=openapi.TYPE_OBJECT),
+                                    'total_amount': openapi.Schema(type=openapi.TYPE_NUMBER),
+                                }
+                            )
+                        ),
+                        'i_owe_to_user': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'user': openapi.Schema(type=openapi.TYPE_OBJECT),
+                                    'total_amount': openapi.Schema(type=openapi.TYPE_NUMBER),
+                                }
+                            )
+                        ),
+                        'total_owed_to_me': openapi.Schema(type=openapi.TYPE_NUMBER),
+                        'total_i_owe': openapi.Schema(type=openapi.TYPE_NUMBER),
+                    }
+                )
+            )
+        }
+    )
+    def get(self, request):
+        user = request.user
+        
+        # Money others owe to me (I'm the payer and they haven't paid)
+        owed_to_me = []
+        # Find bills where I am the payer
+        bills_as_payer = Bill.objects.filter(payer=user)
+        
+        # For summarizing by user who owes me
+        owed_by_user = {}
+        
+        for bill in bills_as_payer:
+            # Find participants who haven't paid
+            unpaid_participants = bill.bill_participants.filter(is_paid=False)
+            for participant in unpaid_participants:
+                if participant.user != user:  # Skip if the participant is myself
+                    owed_to_me.append({
+                        'bill_id': hash_id(bill.id),
+                        'bill_name': bill.billName,
+                        'user': {
+                            'id': hash_id(participant.user.id),
+                            'username': participant.user.username,
+                            'avatarUrl': participant.user.avatarUrl
+                        },
+                        'amount': float(participant.split_amount),
+                        'date': bill.created_at.isoformat(),
+                    })
+                    
+                    # Add to user summary
+                    user_id = participant.user.id
+                    if user_id not in owed_by_user:
+                        owed_by_user[user_id] = {
+                            'user': {
+                                'id': hash_id(participant.user.id),
+                                'username': participant.user.username,
+                                'avatarUrl': participant.user.avatarUrl
+                            },
+                            'total_amount': 0
+                        }
+                    owed_by_user[user_id]['total_amount'] += float(participant.split_amount)
+        
+        # Money I owe to others (I'm a participant, haven't paid, and there's a payer)
+        i_owe = []
+        # For summarizing by user I owe
+        i_owe_to_user = {}
+        
+        # Find bill participations where I haven't paid and there's a payer
+        participations = BillParticipant.objects.filter(
+            user=user,
+            is_paid=False,
+            bill__payer__isnull=False  # Ensure there's a payer
+        ).exclude(bill__payer=user)  # Exclude bills where I'm the payer
+        
+        for participation in participations:
+            bill = participation.bill
+            i_owe.append({
+                'bill_id': hash_id(bill.id),
+                'bill_name': bill.billName,
+                'user': {
+                    'id': hash_id(bill.payer.id),
+                    'username': bill.payer.username,
+                    'avatarUrl': bill.payer.avatarUrl
+                },
+                'amount': float(participation.split_amount),
+                'date': bill.created_at.isoformat(),
+            })
+            
+            # Add to user summary
+            payer_id = bill.payer.id
+            if payer_id not in i_owe_to_user:
+                i_owe_to_user[payer_id] = {
+                    'user': {
+                        'id': hash_id(bill.payer.id),
+                        'username': bill.payer.username,
+                        'avatarUrl': bill.payer.avatarUrl
+                    },
+                    'total_amount': 0
+                }
+            i_owe_to_user[payer_id]['total_amount'] += float(participation.split_amount)
+        
+        # Calculate totals
+        total_owed_to_me = sum(item['amount'] for item in owed_to_me)
+        total_i_owe = sum(item['amount'] for item in i_owe)
+        
+        # Convert dictionaries to lists for the response
+        owed_to_me_by_user = list(owed_by_user.values())
+        i_owe_to_user_list = list(i_owe_to_user.values())
+        
+        return Response({
+            'owed_to_me_by_user': owed_to_me_by_user,
+            'i_owe_to_user': i_owe_to_user_list,
+            'total_owed_to_me': total_owed_to_me,
+            'total_i_owe': total_i_owe
+        })
+
+class UserWeeklySpendingView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        manual_parameters=[
+            openapi.Parameter('start_date', openapi.IN_QUERY, description="Start date (YYYY-MM-DD), defaults to 7 days ago", 
+                            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+            openapi.Parameter('end_date', openapi.IN_QUERY, description="End date (YYYY-MM-DD), defaults to today", 
+                            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+        ],
+        responses={
+            200: openapi.Response(
+                description="User's spending summary",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'total_spent': openapi.Schema(type=openapi.TYPE_NUMBER),
+                        'period_start': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                        'period_end': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                        'spending_by_category': openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            additional_properties=openapi.Schema(type=openapi.TYPE_NUMBER)
+                        ),
+                        'daily_spending': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'date': openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+                                    'amount': openapi.Schema(type=openapi.TYPE_NUMBER)
+                                }
+                            )
+                        )
+                    }
+                )
+            )
+        }
+    )
+    def get(self, request):
+        user = request.user
+        
+        # Get date parameters or default to last 7 days
+        try:
+            end_date = datetime.strptime(request.query_params.get('end_date', datetime.now().strftime('%Y-%m-%d')), '%Y-%m-%d')
+            start_date = datetime.strptime(request.query_params.get('start_date', (end_date - timedelta(days=7)).strftime('%Y-%m-%d')), '%Y-%m-%d')
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Add one day to end_date to include the full day
+        end_date = end_date + timedelta(days=1)
+        
+        # Get all bills where the user is a participant within the date range
+        user_bills = BillParticipant.objects.filter(
+            user=user,
+            bill__created_at__gte=start_date,
+            bill__created_at__lt=end_date
+        )
+        
+        # Calculate total spending (user's portion of bills)
+        total_spent = user_bills.aggregate(Sum('split_amount'))['split_amount__sum'] or 0
+        
+        # Calculate spending by category
+        spending_by_category = {}
+        daily_spending = {}
+        
+        for participation in user_bills:
+            bill = participation.bill
+            
+            # Add to category totals
+            category = bill.category or 'Uncategorized'
+            if category not in spending_by_category:
+                spending_by_category[category] = 0
+            spending_by_category[category] += participation.split_amount
+            
+            # Add to daily totals
+            date_str = bill.created_at.strftime('%Y-%m-%d')
+            if date_str not in daily_spending:
+                daily_spending[date_str] = 0
+            daily_spending[date_str] += participation.split_amount
+        
+        # Format daily spending for response
+        daily_spending_list = [
+            {'date': date, 'amount': float(amount)}
+            for date, amount in sorted(daily_spending.items())
+        ]
+        
+        return Response({
+            'total_spent': float(total_spent),
+            'period_start': start_date.strftime('%Y-%m-%d'),
+            'period_end': (end_date - timedelta(days=1)).strftime('%Y-%m-%d'),
+            'spending_by_category': {k: float(v) for k, v in spending_by_category.items()},
+            'daily_spending': daily_spending_list
+        })
