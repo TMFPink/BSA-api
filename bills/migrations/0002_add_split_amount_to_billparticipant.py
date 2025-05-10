@@ -7,10 +7,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
-            model_name='billparticipant',
-            name='split_amount',
-            field=models.DecimalField(max_digits=10, decimal_places=2, default=0),
-            preserve_default=False,
-        ),
+        # migrations.AddField(
+        #     model_name='billparticipant',
+        #     name='split_amount',
+        #     field=models.DecimalField(max_digits=10, decimal_places=2, default=0),
+        #     preserve_default=False,
+        # ),
     ]
