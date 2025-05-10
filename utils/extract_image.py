@@ -28,7 +28,7 @@ def extract_bill_data(image_file):
                     Return ONLY valid JSON with the following structure:
                     {
                         "billName": "Store or Restaurant Name",
-                        "category": "food", (Detect a category in these "food", "entertainment", "transportation", "others". based on the bill)
+                        "category": "Food", (Detect a category in these "Food", "Entertainment", "Transport", "Others". based on the bill)
                         "total_amount": 123.45, (just the number without currency symbol)
                         "date": "2025-05-07T12:34:56Z", (ISO format date, guess current date if not found)
                         "billDetails": [

@@ -121,6 +121,7 @@ class BillListCreateView(generics.ListCreateAPIView):
                             'name': openapi.Schema(type=openapi.TYPE_STRING, description='Name of the participant'),
                             'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER, description='Split amount for the participant'),
                             'paid': openapi.Schema(type=openapi.TYPE_BOOLEAN, description='Whether the participant has paid'),
+                            'avatarUrl': openapi.Schema(type=openapi.TYPE_STRING, description='Avatar URL of the participant'),
                         }
                     ),
                     description='List of participants'
@@ -308,7 +309,7 @@ class AddParticipantsToBillView(APIView):
                 "user": {
                     "id": hash_id(participant.user.id),
                     "username": participant.user.username,
-                    "avatarUrl": participant.user.avatarUrl  
+                    "avatarUrl": participant.user.avatarUrl 
 
                 },
                 "split_amount": participant.split_amount,  
@@ -423,9 +424,15 @@ class UserBalanceView(APIView):
                                 'username': participant.user.username,
                                 'avatarUrl': participant.user.avatarUrl
                             },
-                            'total_amount': 0
+                            'total_amount': 0,
+                            'bills': []
                         }
                     owed_by_user[user_id]['total_amount'] += float(participant.split_amount)
+                    owed_by_user[user_id]['bills'].append({
+                        'bill_id': hash_id(bill.id),
+                        'bill_name': bill.billName,
+                        'amount': float(participant.split_amount)
+                    })
         
         # Money I owe to others (I'm a participant, haven't paid, and there's a payer)
         i_owe = []
@@ -462,23 +469,74 @@ class UserBalanceView(APIView):
                         'username': bill.payer.username,
                         'avatarUrl': bill.payer.avatarUrl
                     },
-                    'total_amount': 0
+                    'total_amount': 0,
+                    'bills': []
                 }
             i_owe_to_user[payer_id]['total_amount'] += float(participation.split_amount)
+            i_owe_to_user[payer_id]['bills'].append({
+                'bill_id': hash_id(bill.id),
+                'bill_name': bill.billName,
+                'amount': float(participation.split_amount)
+            })
         
-        # Calculate totals
-        total_owed_to_me = sum(item['amount'] for item in owed_to_me)
-        total_i_owe = sum(item['amount'] for item in i_owe)
+        # Calculate net balances per user
+        net_balances = {}
         
-        # Convert dictionaries to lists for the response
-        owed_to_me_by_user = list(owed_by_user.values())
-        i_owe_to_user_list = list(i_owe_to_user.values())
+        # Process amounts owed to me
+        for user_id, data in owed_by_user.items():
+            if user_id not in net_balances:
+                net_balances[user_id] = {
+                    'user': data['user'],
+                    'net_amount': 0,
+                    'bills_they_owe': [],
+                    'bills_i_owe': []
+                }
+            net_balances[user_id]['net_amount'] += data['total_amount']
+            net_balances[user_id]['bills_they_owe'] = data['bills']
+        
+        # Process amounts I owe
+        for user_id, data in i_owe_to_user.items():
+            if user_id not in net_balances:
+                net_balances[user_id] = {
+                    'user': data['user'],
+                    'net_amount': 0,
+                    'bills_they_owe': [],
+                    'bills_i_owe': []
+                }
+            net_balances[user_id]['net_amount'] -= data['total_amount']  # Subtract what I owe
+            net_balances[user_id]['bills_i_owe'] = data['bills']
+        
+        # Organize into final lists, excluding zero balances
+        owed_to_me_net = []
+        i_owe_net = []
+        
+        for user_id, data in net_balances.items():
+            if abs(data['net_amount']) < 0.01:  # Skip effectively zero balances (floating point comparison)
+                continue
+                
+            entry = {
+                'user': data['user'],
+                'total_amount': abs(data['net_amount']),
+                'bills': []
+            }
+            
+            # Add appropriate bills based on direction of balance
+            if data['net_amount'] > 0:
+                entry['bills'] = data['bills_they_owe']
+                owed_to_me_net.append(entry)
+            else:
+                entry['bills'] = data['bills_i_owe']
+                i_owe_net.append(entry)
+        
+        # Calculate net totals
+        total_owed_to_me_net = sum(item['total_amount'] for item in owed_to_me_net)
+        total_i_owe_net = sum(item['total_amount'] for item in i_owe_net)
         
         return Response({
-            'owed_to_me_by_user': owed_to_me_by_user,
-            'i_owe_to_user': i_owe_to_user_list,
-            'total_owed_to_me': total_owed_to_me,
-            'total_i_owe': total_i_owe
+            'owed_to_me_by_user': owed_to_me_net,
+            'i_owe_to_user': i_owe_net,
+            'total_owed_to_me': total_owed_to_me_net,
+            'total_i_owe': total_i_owe_net
         })
 
 class UserWeeklySpendingView(APIView):
@@ -573,4 +631,104 @@ class UserWeeklySpendingView(APIView):
             'period_end': (end_date - timedelta(days=1)).strftime('%Y-%m-%d'),
             'spending_by_category': {k: float(v) for k, v in spending_by_category.items()},
             'daily_spending': daily_spending_list
+        })
+
+class PayBillView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            properties={
+                'bill_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed bill ID'),
+                'user_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed user ID of the person who paid'),
+            },
+            required=['bill_id', 'user_id']
+        ),
+        responses={
+            200: openapi.Response(
+                description="Payment status updated successfully",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'message': openapi.Schema(type=openapi.TYPE_STRING),
+                        'participation': openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                'id': openapi.Schema(type=openapi.TYPE_STRING),
+                                'user': openapi.Schema(type=openapi.TYPE_OBJECT),
+                                'bill_id': openapi.Schema(type=openapi.TYPE_STRING),
+                                'bill_name': openapi.Schema(type=openapi.TYPE_STRING),
+                                'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER),
+                                'is_paid': openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                            }
+                        )
+                    }
+                )
+            ),
+            400: "Bad Request - Invalid parameters",
+            403: "Forbidden - Unauthorized to update payment status",
+            404: "Not Found - Bill or user not found"
+        }
+    )
+    def post(self, request):
+        # Get and validate bill_id
+        encoded_bill_id = request.data.get("bill_id")
+        bill_id = decode_hashed_id(encoded_bill_id, Bill)
+        if not bill_id:
+            return Response({"error": "Invalid bill ID."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get and validate user_id
+        encoded_user_id = request.data.get("user_id")
+        user_id = decode_hashed_id(encoded_user_id, User)
+        if not user_id:
+            return Response({"error": "Invalid user ID."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get the bill and the user
+        bill = get_object_or_404(Bill, id=bill_id)
+        user = get_object_or_404(User, id=user_id)
+        
+        # Check if the authenticated user is either:
+        # 1. The user who is paying (user_id)
+        # 2. The payer of the bill (has permission to mark others as paid)
+        if request.user.id != user_id and request.user != bill.payer:
+            return Response(
+                {"error": "You do not have permission to update this payment status."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Find the participation to update
+        try:
+            participation = BillParticipant.objects.get(bill=bill, user=user)
+        except BillParticipant.DoesNotExist:
+            return Response(
+                {"error": "This user is not a participant in the specified bill."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Update payment status
+        participation.is_paid = True
+        participation.save()
+        
+        # Check if all participants have paid
+        all_paid = not bill.bill_participants.filter(is_paid=False).exists()
+        if all_paid:
+            bill.all_paid = True
+            bill.save()
+        
+        # Return success response with updated participation details
+        return Response({
+            "message": f"Payment status updated for {user.username} on bill '{bill.billName}'",
+            "participation": {
+                "id": hash_id(participation.id),
+                "user": {
+                    "id": hash_id(user.id),
+                    "username": user.username,
+                    "avatarUrl": user.avatarUrl
+                },
+                "bill_id": hash_id(bill.id),
+                "bill_name": bill.billName,
+                "split_amount": float(participation.split_amount),
+                "is_paid": participation.is_paid
+            }
         })

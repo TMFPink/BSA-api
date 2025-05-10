@@ -7,12 +7,19 @@ from hashlib import sha256
 from django.shortcuts import get_object_or_404
 
 class BillParticipantSerializer(serializers.ModelSerializer):
-    user = UserSerializer()
+    user = serializers.SerializerMethodField()
     split_amount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = BillParticipant
-        fields = ['id', 'user', 'bill', 'split_amount', 'is_paid']
+        fields = ['id', 'user', 'split_amount', 'is_paid']
+    
+    def get_user(self, obj):
+        return {
+            'id': hash_id(obj.user.id),
+            'username': obj.user.username,
+            'avatarUrl': obj.user.avatarUrl  # Ensure avatarUrl is included
+        }
 
 class BillDetailSerializer(serializers.ModelSerializer):
     user = serializers.CharField(required=False, allow_null=True)  # Accept hashed user ID as a string
@@ -24,6 +31,7 @@ class BillDetailSerializer(serializers.ModelSerializer):
 class ParticipantSerializer(serializers.Serializer):
     id = serializers.CharField()
     name = serializers.CharField()
+    avatarUrl = serializers.CharField()
     split_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
     paid = serializers.BooleanField()
 
@@ -128,6 +136,7 @@ class BillSerializer(serializers.ModelSerializer):
                     "id": hash_id(participant.user.id),
                     "name": participant.user.username,
                     "split_amount": participant.split_amount,
+                    "avatarUrl": participant.user.avatarUrl,
                     "paid": participant.is_paid
                 }
                 for participant in instance.bill_participants.all()
@@ -139,6 +148,14 @@ class BillSerializer(serializers.ModelSerializer):
                 "paid": instance.all_paid
             }
         })
+
+        # Ensure participants have avatarUrl when serialized
+        if 'participants' in representation:
+            for participant in representation['participants']:
+                if 'user' in participant and 'avatarUrl' not in participant['user']:
+                    user = User.objects.get(id=decode_hashed_id(participant['user']['id'], User))
+                    participant['user']['avatarUrl'] = user.avatarUrl
+
         return representation
 
 class BillImageUploadSerializer(serializers.Serializer):
