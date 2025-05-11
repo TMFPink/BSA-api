@@ -640,10 +640,9 @@ class PayBillView(APIView):
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             properties={
-                'bill_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed bill ID'),
-                'user_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed user ID of the person who paid'),
+                'user_id': openapi.Schema(type=openapi.TYPE_STRING, description='Hashed user ID of the payer'),
             },
-            required=['bill_id', 'user_id']
+            required=['user_id']
         ),
         responses={
             200: openapi.Response(
@@ -652,83 +651,72 @@ class PayBillView(APIView):
                     type=openapi.TYPE_OBJECT,
                     properties={
                         'message': openapi.Schema(type=openapi.TYPE_STRING),
-                        'participation': openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                'id': openapi.Schema(type=openapi.TYPE_STRING),
-                                'user': openapi.Schema(type=openapi.TYPE_OBJECT),
-                                'bill_id': openapi.Schema(type=openapi.TYPE_STRING),
-                                'bill_name': openapi.Schema(type=openapi.TYPE_STRING),
-                                'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER),
-                                'is_paid': openapi.Schema(type=openapi.TYPE_BOOLEAN),
-                            }
+                        'updated_participations': openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    'id': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'bill_id': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'bill_name': openapi.Schema(type=openapi.TYPE_STRING),
+                                    'split_amount': openapi.Schema(type=openapi.TYPE_NUMBER),
+                                    'is_paid': openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                                }
+                            )
                         )
                     }
                 )
             ),
             400: "Bad Request - Invalid parameters",
-            403: "Forbidden - Unauthorized to update payment status",
-            404: "Not Found - Bill or user not found"
+            404: "Not Found - User not found"
         }
     )
     def post(self, request):
-        # Get and validate bill_id
-        encoded_bill_id = request.data.get("bill_id")
-        bill_id = decode_hashed_id(encoded_bill_id, Bill)
-        if not bill_id:
-            return Response({"error": "Invalid bill ID."}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Get and validate user_id
+        # Get the payer's hashed user ID (e.g., Tina)
         encoded_user_id = request.data.get("user_id")
-        user_id = decode_hashed_id(encoded_user_id, User)
-        if not user_id:
+        payer_user_id = decode_hashed_id(encoded_user_id, User)
+        if not payer_user_id:
             return Response({"error": "Invalid user ID."}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Get the bill and the user
-        bill = get_object_or_404(Bill, id=bill_id)
-        user = get_object_or_404(User, id=user_id)
-        
-        # Check if the authenticated user is either:
-        # 1. The user who is paying (user_id)
-        # 2. The payer of the bill (has permission to mark others as paid)
-        if request.user.id != user_id and request.user != bill.payer:
-            return Response(
-                {"error": "You do not have permission to update this payment status."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        # Find the participation to update
-        try:
-            participation = BillParticipant.objects.get(bill=bill, user=user)
-        except BillParticipant.DoesNotExist:
-            return Response(
-                {"error": "This user is not a participant in the specified bill."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Update payment status
-        participation.is_paid = True
-        participation.save()
-        
-        # Check if all participants have paid
-        all_paid = not bill.bill_participants.filter(is_paid=False).exists()
-        if all_paid:
-            bill.all_paid = True
-            bill.save()
-        
-        # Return success response with updated participation details
-        return Response({
-            "message": f"Payment status updated for {user.username} on bill '{bill.billName}'",
-            "participation": {
+
+        # Get the authenticated user (e.g., you)
+        participant = request.user
+        payer = get_object_or_404(User, id=payer_user_id)
+
+        # Find all bills where the authenticated user owes money to the specified payer
+        unpaid_participations = BillParticipant.objects.filter(
+            user=participant,
+            is_paid=False,
+            bill__payer=payer
+        )
+
+        print(f"payer: {payer}, participant: {participant}, unpaid_participations: {unpaid_participations}")
+
+        if not unpaid_participations.exists():
+            return Response({"error": "No unpaid participations found for this user."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Update all participations to paid
+        updated_participations = []
+        for participation in unpaid_participations:
+            participation.is_paid = True
+            participation.save()
+
+            # Check if all participants for the bill have paid
+            bill = participation.bill
+            if not bill.bill_participants.filter(is_paid=False).exists():
+                bill.all_paid = True
+                bill.save()
+
+            # Add to response data
+            updated_participations.append({
                 "id": hash_id(participation.id),
-                "user": {
-                    "id": hash_id(user.id),
-                    "username": user.username,
-                    "avatarUrl": user.avatarUrl
-                },
                 "bill_id": hash_id(bill.id),
                 "bill_name": bill.billName,
                 "split_amount": float(participation.split_amount),
                 "is_paid": participation.is_paid
-            }
-        })
+            })
+
+        # Return success response
+        return Response({
+            "message": f"All unpaid participations for {participant.username} to {payer.username} have been marked as paid.",
+            "updated_participations": updated_participations
+        }, status=status.HTTP_200_OK)
