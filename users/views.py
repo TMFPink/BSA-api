@@ -6,6 +6,9 @@ from .models import User
 from .serializers import UserSerializer
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from rest_framework.parsers import MultiPartParser, FormParser
+from .serializers import ImageUploadSerializer
+
 
 class GetMeView(APIView):
     permission_classes = [IsAuthenticated]
@@ -118,3 +121,38 @@ class ChangePasswordView(APIView):
             {"message": "Password changed successfully"},
             status=status.HTTP_200_OK
         )
+    
+
+class ImageUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    @swagger_auto_schema(
+        request_body=ImageUploadSerializer,
+        responses={
+            200: openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "qrCode": openapi.Schema(type=openapi.TYPE_STRING, description="URL of the uploaded QR code image"),
+                },
+            ),
+            400: "Bad Request",
+        },
+    )
+    def post(self, request):
+        serializer = ImageUploadSerializer(data=request.data)
+        if serializer.is_valid():
+            image = serializer.validated_data["image"]
+            try:
+                # Upload the image to Cloudinary
+                url = serializer.upload_to_cloudinary(image)
+                
+                # Update the user's qrCode field
+                user = request.user
+                user.qrCode = url
+                user.save()
+
+                return Response({"qrCode": url}, status=status.HTTP_200_OK)
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

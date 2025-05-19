@@ -35,7 +35,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'default-secret-key')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['bsa-api-o3vj.onrender.com', 'localhost']
+ALLOWED_HOSTS = ['bsa-api-o3vj.onrender.com', 'localhost','127.0.0.1']
 
 
 # Application definition
@@ -57,6 +57,8 @@ INSTALLED_APPS = [
     'users',
     'bills',
     'friends',  
+    'cloudinary',
+    'cloudinary_storage',
 ]
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')

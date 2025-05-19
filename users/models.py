@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from cloudinary.models import CloudinaryField
 
 class User(AbstractUser):
     username = models.CharField(max_length=150, unique=True)  # Increased from 30 to 150
@@ -9,6 +10,7 @@ class User(AbstractUser):
     phone = models.CharField(max_length=15, blank=True, null=True)
     password = models.CharField(max_length=128)  # Increased from 30 to 128
     avatarUrl = models.CharField(blank=True, null=True, default="avatar1.jpeg")  # New field for avatar
+    qrCode = models.CharField(blank=True, null=True)  # New field for QR code
 
     
     def __str__(self):

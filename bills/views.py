@@ -467,7 +467,8 @@ class UserBalanceView(APIView):
                     'user': {
                         'id': hash_id(bill.payer.id),
                         'username': bill.payer.username,
-                        'avatarUrl': bill.payer.avatarUrl
+                        'avatarUrl': bill.payer.avatarUrl,
+                        'qrCode': bill.payer.qrCode
                     },
                     'total_amount': 0,
                     'bills': []
